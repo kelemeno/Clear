@@ -4,7 +4,7 @@ module Main (main) where
 
 import Control.Monad (forM_, when, unless)
 import Parser (calc, lexer)
-import System.Directory (createDirectoryIfMissing, doesFileExist)
+import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist)
 import System.Environment (getArgs)
 import System.FilePath
     ( (<.>), (</>), takeBaseName, splitPath, dropExtension )
@@ -107,6 +107,12 @@ generatedDir = "Generated"
 generatedSubdirName :: String -> String
 generatedSubdirName = (generatedDir </>)
 
+specsDir :: String
+specsDir = "specs"
+
+specsSubdirName :: String -> String
+specsSubdirName = (specsDir </>)
+
 commonSubdirName :: String
 commonSubdirName = "Common"
 
@@ -127,6 +133,9 @@ leanExt = "lean"
 
 subdir :: FilePath -> FilePath -> FilePath
 subdir = (</>) . (".." </>) . generatedSubdirName
+
+userSubdir :: FilePath -> FilePath -> FilePath
+userSubdir = (</>) . (".." </>) . specsSubdirName
 
 data Template = TemplateFor | TemplateFunction | TemplateStmt | TemplateSwitch
 
@@ -159,6 +168,10 @@ importPrefixOfContract topLevelContract (s, (contract, isTopLevel)) =
   leanImportOfFile $ generatedSubdirName topLevelContract </> contract </> if isTopLevel then s else commonSubdirName </> s
   -- "import " ++ generatedSubdirName topLevelContract ++ "." ++ contract ++ (if isTopLevel then "" else "." ++ commonSubdirName) ++ "." ++ s
 
+userImportPrefixOfContract :: String -> Import -> String
+userImportPrefixOfContract topLevelContract (s, (contract, isTopLevel)) =
+  leanImportOfFile $ specsSubdirName topLevelContract </> contract </> if isTopLevel then s else commonSubdirName </> s
+
 opensOfImports :: ContractName -> Imports -> String
 opensOfImports topLevelContract imports =
   commonNamespace ++ userFNamespaces
@@ -172,9 +185,11 @@ internalImports topLevelContract contract file ttype =
   case ttype of
     TTGen -> ""
     TTUser -> unlines [importWithSuffix templateSuffixGen]
-    TTGlue -> unlines [importWithSuffix templateSuffixGen, importWithSuffix templateSuffixUser]
+    TTGlue -> unlines [importWithSuffix templateSuffixGen, userImportWithSuffix templateSuffixUser]
     where importWithSuffix suffix =
             "\n" ++ importPrefixOfContract topLevelContract (file ++ suffix, (contract, True))
+          userImportWithSuffix suffix =
+            "\n" ++ userImportPrefixOfContract topLevelContract (file ++ suffix, (contract, True))
 
 generateGuarded :: Bool -> String -> String
 generateGuarded c str = if c then "" else str
@@ -290,15 +305,16 @@ writeSegment topLevelContract (Segment name abstractions stmt (f, (contract, isT
   userFileExists <- doesFileExist userFile
   unless userFileExists $ writeFile userFile user
 
-  -- Do not overwrite the glue file, it does not change as the lemmas therein can be deduced
-  -- purely from the superstructure of proofs.
-  glueFileExists <- doesFileExist glueFile
-  unless glueFileExists $ writeFile glueFile glue
+  -- Always overwrite the glue file: it is derived from generator state, and import/path
+  -- conventions can change even if the theorem shape does not.
+  writeFile glueFile glue
   where
     leanFiles = (leanFileOfAbstr TTGen, leanFileOfAbstr TTUser, leanFileOfAbstr TTGlue)
       where tlContract               = subdir topLevelContract contract
+            tlUserContract           = userSubdir topLevelContract contract
             controlFlowOrAbstraction = if isTopLevel then "" else commonSubdirName
             fileName ttype           = name ++ suffixOfTemplateType ttype
+            leanFileOfAbstr TTUser   = tlUserContract </> controlFlowOrAbstraction </> fileName TTUser <.> leanExt
             leanFileOfAbstr ttype    = tlContract </> controlFlowOrAbstraction </> fileName ttype <.> leanExt
     fileName = contract ++ if isTopLevel then "" else "." ++ commonSubdirName
     readTemplates template = do
@@ -320,8 +336,11 @@ writeSegment topLevelContract (Segment name abstractions stmt (f, (contract, isT
 writeSegments :: ContractName -> [Segment] -> IO ()
 writeSegments topLevelContract segments = do
   createDirectoryIfMissing False $ ".." </> generatedSubdirName topLevelContract
+  createDirectoryIfMissing False $ ".." </> specsSubdirName topLevelContract
   forM_ segments $ \seg@(Segment _ _ _ (_, (contract, isTopLevel))) -> do
-    when isTopLevel $ createDirectoryIfMissing True $ subdir topLevelContract contract </> commonSubdirName
+    when isTopLevel $ do
+      createDirectoryIfMissing True $ subdir topLevelContract contract </> commonSubdirName
+      createDirectoryIfMissing True $ userSubdir topLevelContract contract </> commonSubdirName
     writeSegment topLevelContract seg
 
 -- | Run verification generator (given raw cmdline args).
@@ -335,7 +354,16 @@ vc (yulFile : _) = do
   where topLevel = takeBaseName yulFile
 
 getAllImports :: IO [String]
-getAllImports = traverseDir (\acc f -> pure (acc ++ [f])) [] $ ".." </> generatedDir
+getAllImports = do
+  generatedExists <- doesDirectoryExist $ ".." </> generatedDir
+  generatedFiles <- if generatedExists
+    then traverseDir (\acc f -> pure (acc ++ [f])) [] $ ".." </> generatedDir
+    else pure []
+  specsExists <- doesDirectoryExist $ ".." </> specsDir
+  specsFiles <- if specsExists
+    then traverseDir (\acc f -> pure (acc ++ [f])) [] $ ".." </> specsDir
+    else pure []
+  pure $ generatedFiles ++ specsFiles
 
 leanFormatOfFilePath :: FilePath -> String
 leanFormatOfFilePath = intercalate "." . wordsWhen (`elem` ['/']) . dropExtension

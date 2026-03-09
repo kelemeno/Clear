@@ -5,6 +5,7 @@ module Preprocessor (preprocess, preprocessFile, preprocessDefs) where
 import Algebra.Graph.AdjacencyMap (stars)
 import Algebra.Graph.AdjacencyMap.Algorithm (topSort)
 import Control.Arrow (second)
+import Control.Monad.State.Strict (State, evalState, get, put)
 import Data.List (intercalate, sortBy, foldl', findIndex, isPrefixOf, tails)
 import qualified Data.List.NonEmpty as NE
 import Data.Map (Map)
@@ -224,12 +225,62 @@ preprocessDefs = rejectExternals . map (delegateCallHack . expressionSplitterFix
 
         expressionSplitterFix :: FuncDef -> FuncDef
         expressionSplitterFix (FuncDef a b c d body) =
-          FuncDef a b c d . foldl' (\acc stmt ->
-              case splitPop stmt of
-                Nothing -> acc ++ [stmt] -- your antipatterns can't stop me
-                Just (pop, expr) -> acc ++ [LetInit (NE.fromList ["cheat"]) expr, pop]
-            ) [] $ body
-          where splitPop :: Stmt -> Maybe (Stmt, Expr)
-                splitPop (ExpressionStmt (Call "pop" [arg])) =
-                  Just (ExpressionStmt (Call "pop" [Var "cheat"]), arg)
-                splitPop _ = Nothing
+          FuncDef a b c d $ evalState (splitBlock body) 0
+          where
+            splitBlock :: [Stmt] -> State Int [Stmt]
+            splitBlock = fmap concat . mapM splitStmt
+
+            splitStmt :: Stmt -> State Int [Stmt]
+            splitStmt (Block stmts) = (: []) . Block <$> splitBlock stmts
+            splitStmt (LetInit ids expr) = do
+              (prefix, expr') <- splitExpr expr
+              pure $ prefix ++ [LetInit ids expr']
+            splitStmt (Assignment ids expr) = do
+              (prefix, expr') <- splitExpr expr
+              pure $ prefix ++ [Assignment ids expr']
+            splitStmt (ExpressionStmt expr) = do
+              (prefix, expr') <- splitExpr expr
+              pure $ prefix ++ [ExpressionStmt expr']
+            splitStmt (If cond body') =
+              (: []) . If cond <$> splitBlock body'
+            splitStmt (Switch cond cases dflt) = do
+              cases' <- mapM (traverse splitBlock) cases
+              dflt' <- splitBlock dflt
+              pure [Switch cond cases' dflt']
+            splitStmt (For pre cond post body') = do
+              pre' <- splitBlock pre
+              post' <- splitBlock post
+              body'' <- splitBlock body'
+              pure [For pre' cond post' body'']
+            splitStmt stmt = pure [stmt]
+
+            splitExpr :: Expr -> State Int ([Stmt], Expr)
+            splitExpr (Call f args) = do
+              (prefix, args') <- splitArgs args
+              pure (prefix, Call f args')
+            splitExpr (CrossContractCall f contract args) = do
+              (prefix, args') <- splitArgs args
+              pure (prefix, CrossContractCall f contract args')
+            splitExpr expr = pure ([], expr)
+
+            splitArgs :: [Expr] -> State Int ([Stmt], [Expr])
+            splitArgs = fmap unzipAndFlatten . mapM splitArg
+
+            splitArg :: Expr -> State Int ([Stmt], Expr)
+            splitArg expr = do
+              (prefix, expr') <- splitExpr expr
+              case expr' of
+                Var {} -> pure (prefix, expr')
+                Lit {} -> pure (prefix, expr')
+                _ -> do
+                  tmp <- freshIdent
+                  pure (prefix ++ [LetInit (NE.fromList [tmp]) expr'], Var tmp)
+
+            unzipAndFlatten :: [([Stmt], Expr)] -> ([Stmt], [Expr])
+            unzipAndFlatten = foldr (\(stmts, expr) (accStmts, accExprs) -> (stmts ++ accStmts, expr : accExprs)) ([], [])
+
+            freshIdent :: State Int Identifier
+            freshIdent = do
+              n <- get
+              put (n + 1)
+              pure $ "split_expr_" ++ show n

@@ -16,6 +16,10 @@ lean_lib «Generated» {
   -- add any library configuration options here
 }
 
+lean_lib «specs» {
+  -- add any library configuration options here
+}
+
 lean_lib «All» {
   -- add any library configuration options here
 }
