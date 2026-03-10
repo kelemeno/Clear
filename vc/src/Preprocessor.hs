@@ -241,17 +241,21 @@ preprocessDefs = rejectExternals . map (delegateCallHack . expressionSplitterFix
             splitStmt (ExpressionStmt expr) = do
               (prefix, expr') <- splitExpr expr
               pure $ prefix ++ [ExpressionStmt expr']
-            splitStmt (If cond body') =
-              (: []) . If cond <$> splitBlock body'
+            splitStmt (If cond body') = do
+              (prefix, cond') <- splitExpr cond
+              body'' <- splitBlock body'
+              pure $ prefix ++ [If cond' body'']
             splitStmt (Switch cond cases dflt) = do
+              (prefix, cond') <- splitExpr cond
               cases' <- mapM (traverse splitBlock) cases
               dflt' <- splitBlock dflt
-              pure [Switch cond cases' dflt']
+              pure $ prefix ++ [Switch cond' cases' dflt']
             splitStmt (For pre cond post body') = do
               pre' <- splitBlock pre
+              (condPrefix, cond') <- splitExpr cond
               post' <- splitBlock post
               body'' <- splitBlock body'
-              pure [For pre' cond post' body'']
+              pure [For (pre' ++ condPrefix) cond' (post' ++ condPrefix) body'']
             splitStmt stmt = pure [stmt]
 
             splitExpr :: Expr -> State Int ([Stmt], Expr)
