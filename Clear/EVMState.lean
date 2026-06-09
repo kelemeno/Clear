@@ -159,10 +159,13 @@ structure EVMState : Type where
   -- blocks
   blocks : List EVMBlock
   hash_collision : Bool
+  -- set to `true` by `evm_revert`; lets a successful (non-reverting) end state be
+  -- distinguished from one that routed through a `revert` (which otherwise stays `Ok`).
+  reverted : Bool
 deriving DecidableEq
 
 instance : Inhabited EVMState :=
-  ⟨ ∅ , default, default , ∅ , default, ∅ , default , False ⟩
+  ⟨ ∅ , default, default , ∅ , default, ∅ , default , False , False ⟩
 
 abbrev EVM := EVMState
 
@@ -340,7 +343,7 @@ def evm_return (σ : EVMState) (mstart s : UInt256) : EVMState :=
   {σ with machine_state := σ.machine_state.setReturnData vals.data}
 
 def evm_revert (σ : EVMState) (mstart s : UInt256) : EVMState :=
-  σ.evm_return mstart s
+  { σ.evm_return mstart s with reverted := true }
 
 end
 
