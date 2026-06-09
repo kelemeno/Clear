@@ -179,9 +179,55 @@ preprocessFile = sansAssignedLiterals . sansInlineComment . sansComments . repla
                                                        ) . lines
           where findString needle heystack = findIndex (isPrefixOf needle) (tails heystack)
 
+-- | Chunk size for splitting long straight-line runs into synthetic sub-blocks.
+-- Each maximal run of non-control-flow statements longer than this is grouped
+-- into nested 'Block's of this size, which the proof generator then abstracts
+-- (instead of inlining the whole run into one proof term). This bounds the size
+-- of each per-statement proof script and defeats kernel deep-recursion / quadratic
+-- term growth on big straight-line blocks.
+blockChunkSize :: Int
+blockChunkSize = 5
+
+-- | Is a statement part of a straight-line run (i.e. NOT control flow)?
+-- Control flow (If/Switch/For) is already abstracted into its own module by the
+-- generator, so it acts as a boundary between chunkable runs. A nested 'Block'
+-- is treated as a boundary too (it is itself an abstraction unit).
+isStraightLine :: Stmt -> Bool
+isStraightLine If {}     = False
+isStraightLine Switch {} = False
+isStraightLine For {}    = False
+isStraightLine Block {}  = False
+isStraightLine _         = True
+
+-- | Split a statement list, grouping maximal straight-line runs of length
+-- > 'blockChunkSize' into nested 'Block's of (at most) 'blockChunkSize'
+-- statements each. Control-flow statements (and existing blocks) are left in
+-- place as run boundaries. Short runs (<= chunk size) are left inline so we do
+-- not pay an abstraction overhead where it is not needed.
+chunkStmts :: [Stmt] -> [Stmt]
+chunkStmts [] = []
+chunkStmts stmts@(s : ss) =
+  let (run, rest) = span isStraightLine stmts in
+  case run of
+    [] -> s : chunkStmts ss
+    _  -> (if length run > blockChunkSize
+             then map Block (chunksOf blockChunkSize run)
+             else run)
+          ++ chunkStmts rest
+  where
+    chunksOf :: Int -> [a] -> [[a]]
+    chunksOf _ [] = []
+    chunksOf n xs = let (h, t) = splitAt n xs in h : chunksOf n t
+
+-- | Recursively chunk every block in a function definition. Runs after
+-- 'expressionSplitterFix' so the (inflated) final statement list is what gets
+-- chunked.
+chunkBlocksDef :: FuncDef -> FuncDef
+chunkBlocksDef = transformDef (mapStmts chunkStmts)
+
 -- TOOD(some of these are hacks, as per the initial design actually)
 preprocessDefs :: [FuncDef] -> [FuncDef]
-preprocessDefs = rejectExternals . map (delegateCallHack . expressionSplitterFix . (\fd ->
+preprocessDefs = rejectExternals . map (chunkBlocksDef . delegateCallHack . expressionSplitterFix . (\fd ->
   fd {
     fdArgs    = map sanitiseVariableName (fdArgs fd),
     fdReturns = map sanitiseVariableName (fdReturns fd),

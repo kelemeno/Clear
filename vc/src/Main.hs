@@ -67,7 +67,13 @@ superStructureOfAsts asts = snd $ foldl' produceSegment (HashSet.empty, []) asts
     abstractionIdentifierOfNode :: ContractName -> Stmt -> [(Import, Stmt)]
     abstractionIdentifierOfNode contract node =
       case node of
-        (Block block)                  -> abstractionsOfBlock' block
+        -- A bare nested 'Block' here is a synthetic straight-line chunk produced
+        -- by the block-chunking preprocessor. Register it as its own abstraction
+        -- module (so it is emitted + imported) and recurse into its interior for
+        -- any nested function-call abstractions.
+        (Block block)                  -> let blockAbstrs = abstractionsOfBlock' block
+                                              thisNode    = ((nameOfNode node, (contract, False)), node) in
+                                              thisNode : abstractedImports blockAbstrs
         (For pre c post body)          -> let preAbstrs  = abstractionsOfBlock' pre
                                               cAbstrs    = abstractionIdentifierOfNode' (ExpressionStmt c)
                                               postAbstrs = abstractionsOfBlock' post
@@ -95,7 +101,7 @@ superStructureOfAsts asts = snd $ foldl' produceSegment (HashSet.empty, []) asts
         isPrimOp name = name `elem` yulPrimOps
         abstractionsOfBlock' = abstractionsOfBlock contract
         abstractionIdentifierOfNode' = abstractionIdentifierOfNode contract
-        isControlFlow (name, _) = any (`isPrefixOf` name) ["for_", "if_", "switch_"]
+        isControlFlow (name, _) = any (`isPrefixOf` name) ["for_", "if_", "switch_", "block_"]
         abstractedImports = filter (not . isControlFlow . fst)
 
     abstractionsOfBlock :: ContractName -> [Stmt] -> [(Import, Stmt)]
@@ -137,7 +143,7 @@ subdir = (</>) . (".." </>) . generatedSubdirName
 userSubdir :: FilePath -> FilePath -> FilePath
 userSubdir = (</>) . (".." </>) . specsSubdirName
 
-data Template = TemplateFor | TemplateFunction | TemplateStmt | TemplateSwitch
+data Template = TemplateFor | TemplateFunction | TemplateStmt | TemplateSwitch | TemplateBlock
 
 data TemplateType = TTGen | TTUser | TTGlue
 
@@ -146,6 +152,7 @@ templateOfName name
   | "for_" `isPrefixOf` name = TemplateFor
   | "if_" `isPrefixOf` name = TemplateStmt
   | "switch_" `isPrefixOf` name = TemplateSwitch
+  | "block_" `isPrefixOf` name = TemplateBlock
   | otherwise = TemplateFunction
 
 suffixOfTemplateType :: TemplateType -> String
@@ -161,6 +168,7 @@ pathOfTemplate ttype template =
       TemplateFunction -> suffix "function"
       TemplateStmt     -> suffix "stmt"
       TemplateSwitch   -> suffix "stmt"
+      TemplateBlock    -> suffix "stmt"
   where suffix template = template ++ suffixOfTemplateType ttype
 
 importPrefixOfContract :: String -> Import -> String
@@ -331,7 +339,13 @@ writeSegment topLevelContract (Segment name abstractions stmt (f, (contract, isT
                                         pure $ fillInFunction topLevelContract name abstractions f genFile userFile glueFile
                  TemplateSwitch   -> do (genFile, userFile, glueFile) <- readTemplates TemplateStmt
                                         pure $ fillInStatement topLevelContract fileName name abstractions stmt (switchOfStmt genFile) (switchOfStmt userFile) (switchOfStmt glueFile)
+                 TemplateBlock    -> do (genFile, userFile, glueFile) <- readTemplates TemplateStmt
+                                        pure $ fillInStatement topLevelContract fileName name abstractions stmt (blockOfStmt genFile) (blockOfStmt userFile) (blockOfStmt glueFile)
     switchOfStmt = unlines . map (replace "If _ _" "Switch _ _ _" . replace "rw [If']" "rw [Switch']") . lines
+    -- A chunk block module: the def body is a `.Block`, not an `.If`. Replace the
+    -- If-specific case-cleanup pattern with the Block one and drop the `rw [If']`
+    -- step entirely (the per-statement script peels statements via `rw [cons]`).
+    blockOfStmt = unlines . map (replace "If _ _" "Block _" . replace "rw [If']" "skip") . lines
 
 writeSegments :: ContractName -> [Segment] -> IO ()
 writeSegments topLevelContract segments = do

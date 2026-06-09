@@ -108,7 +108,7 @@ data Stmt
   deriving (Eq, Ord, Show)
 
 instance (Hashable Stmt) where
-  hashWithSalt s (Block body) = sum (map (hashWithSalt s) body)
+  hashWithSalt s (Block body) = s `hashWithSalt` "Block" `hashWithSalt` body
   hashWithSalt s (LetInit idn e) = s `hashWithSalt` idn `hashWithSalt` e
   hashWithSalt s (Assignment lhs e) = s `hashWithSalt` lhs `hashWithSalt` e
   hashWithSalt s (Declaration idn) = hashWithSalt s idn
@@ -154,10 +154,12 @@ nameOfNode node =
     (ExpressionStmt (Call f _)) -> f -- Functions are already named; fortuitous!
     (If {})                     -> ifPrefix ++ show nodeHash
     (Switch {})                 -> switchPrefix ++ show nodeHash
+    (Block {})                  -> blockPrefix ++ show nodeHash
     _                           -> "<<ERROR>> - No abstraction associated with: " ++ show node
   where ifPrefix  = "if_"
         forPrefix = "for_"
         switchPrefix = "switch_"
+        blockPrefix = "block_"
         nodeHash  = abs . hash $ node
 
 ----------------------------------------------------------------------------

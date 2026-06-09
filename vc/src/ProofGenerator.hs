@@ -78,8 +78,21 @@ finish = unlines [
     "exact h"
   ]
 
+-- | Inline a block's statements directly into the current proof term (no
+-- abstraction). Used for the *enclosing* body of a function or control-flow
+-- node, and for the body of a chunk sub-block module itself.
+inlineBlockBody :: [Stmt] -> String
+inlineBlockBody body = foldMap (\s -> tacticsOfStmt' True s ++ "\n") body
+
 tacticsOfStmt' :: Bool -> Stmt -> String
-tacticsOfStmt' _ (Block body) = foldMap (\s -> tacticsOfStmt' True s ++ "\n") body
+-- A bare nested 'Block' is a synthetic chunk produced by the block-chunking
+-- preprocessor. In abstraction position (abs == True) we reference its module
+-- via the existing `abstraction` combinator instead of inlining its statements,
+-- which is what bounds the proof-term size of big straight-line runs. At the
+-- top level (abs == False) — e.g. a chunk module's own body, or a function body
+-- — we inline as before.
+tacticsOfStmt' True node@(Block _) = abstraction (nameOfNode node)
+tacticsOfStmt' False (Block body) = inlineBlockBody body
 tacticsOfStmt' _ (LetInit _ (Call f _)) =
     if f `elem` yulPrimOps
     then unlines [
@@ -131,17 +144,17 @@ tacticsOfStmt' abs node@(Switch c legs dflt) =
     "unfold execSwitchCases",
     tacticsOfCond,
     tacticsOfExpr c,
-    concatMap ((tacticsOfStmt' abs . Block) . snd) legs,
+    concatMap (inlineBlockBody . snd) legs,
     "generalize hdefault : exec _ _ _ = sdef",
     "unfold execSwitchCases",
     "subst hdefault",
-    tacticsOfStmt' abs (Block dflt)]
+    inlineBlockBody dflt]
 tacticsOfStmt' abs node@(For {}) =
   if abs
   then abstraction (nameOfNode node) else "TOP LEVEL FOR?!"
 tacticsOfStmt' abs node@(If c body) =
   if not abs
-  then unlines [tacticsOfCond, tacticsOfExpr c, tacticsOfStmt' True (Block body)]
+  then unlines [tacticsOfCond, tacticsOfExpr c, inlineBlockBody body]
   else abstraction (nameOfNode node)
 tacticsOfStmt' _ Continue = "rw [cons, Continue']"
 tacticsOfStmt' _ Break = "rw [cons, Break']"
